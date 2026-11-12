@@ -1,0 +1,9 @@
+flowchart TD
+    analyze["Analyse and normalize the requirement<br/><i>analyst</i>"]:::done
+    clarify["G1: resolve ambiguities<br/><i>clarifier</i>"]:::failed
+    plan["Decompose into a task graph<br/><i>planner</i>"]:::blocked
+    analyze --> clarify
+    clarify --> plan
+    classDef done fill:#d4f7d4,stroke:#2e7d32
+    classDef failed fill:#ffd6d6,stroke:#c62828
+    classDef blocked fill:#eee,stroke:#999,stroke-dasharray: 4

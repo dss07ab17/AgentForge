@@ -1,0 +1,19 @@
+"""Persistence layer. The service depends on the ``LinkRepository`` protocol, not on SQLite."""
+from __future__ import annotations
+
+from typing import Protocol
+
+from ..models import ClickEvent, Link
+from .sqlite_repo import SQLiteRepository
+
+
+class LinkRepository(Protocol):
+    def insert_link(self, link: Link) -> None: ...
+    def get_link(self, code: str) -> Link | None: ...
+    def delete_link(self, code: str) -> bool: ...
+    def record_clicks(self, events: list[ClickEvent]) -> None: ...
+    def stats(self, code: str) -> dict: ...
+    def ping(self) -> bool: ...
+
+
+__all__ = ["LinkRepository", "SQLiteRepository"]

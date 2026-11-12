@@ -1,0 +1,23 @@
+[project]
+name = "agentforge"
+version = "0.1.0"
+description = "Agentic software-engineering pipeline: requirement -> plan -> code, contracts, tests, docs -> validated, human-approved output"
+requires-python = ">=3.10"
+dependencies = ["jinja2>=3.0", "pytest>=7"]
+
+[project.scripts]
+agentforge = "agentforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agentforge*"]
+
+[tool.setuptools.package-data]
+"agentforge.knowledge.url_shortener" = ["templates/**/*.j2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -p no:cacheprovider"
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["runs", "examples/outputs"]

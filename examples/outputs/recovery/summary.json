@@ -1,0 +1,1230 @@
+{
+ "meta": {
+  "run_id": "recovery",
+  "requirement": "Build a scalable URL shortener service with APIs, persistence, and analytics.",
+  "status": "success",
+  "llm": "offline",
+  "llm_calls": 0,
+  "approval": "auto",
+  "duration_s": 5.87,
+  "artifacts_path": "workspace/",
+  "patch": null,
+  "message": "Generated project is in workspace/ (cd there and run `python -m pytest`).",
+  "limitations": [
+   "Offline mode: agents use deterministic strategies and domain blueprints (URL shortener, the bundled brownfield sample). Other domains/repositories need `--llm anthropic`.",
+   "Generated service uses SQLite and an in-process cache/queue: correct and tested, but not the production stack for the stated scale target (see scaling path).",
+   "No authentication/authorization on the API (documented risk).",
+   "Load/performance targets are design targets; no load test is executed by the pipeline.",
+   "Validation proves the generated tests pass and the contract matches; it cannot prove the tests are exhaustive - human review at G3 remains essential."
+  ]
+ },
+ "spec": {
+  "raw": "Build a scalable URL shortener service with APIs, persistence, and analytics.",
+  "req_type": "greenfield",
+  "domain": "url_shortener",
+  "title": "URL shortener service",
+  "intent": "Let clients turn long URLs into short codes that redirect, persist them durably, and report how links are used.",
+  "functional": [
+   "Create a short link for a valid http(s) URL via REST API",
+   "Redirect GET /{code} to the target URL",
+   "Fetch and delete link metadata via REST API",
+   "Record clicks and expose per-link analytics",
+   "Persist links and analytics durably across restarts"
+  ],
+  "non_functional": [
+   "Redirect hot path does no synchronous writes (analytics are asynchronous)",
+   "Short codes are non-sequential and not enumerable",
+   "Horizontally scalable stateless API tier; storage behind a repository interface",
+   "Consistent JSON error model; no internal details leaked on errors",
+   "Input validation on every external field (URL scheme, length, body size)",
+   "Scale target: 1k creates/s, 50k redirects/s at peak (design target); 100M links/year"
+  ],
+  "out_of_scope": [
+   "User accounts / authentication (documented as a follow-up)",
+   "Web UI",
+   "Link previews / malware scanning (documented as a risk)"
+  ],
+  "ambiguities": [
+   {
+    "id": "scale",
+    "question": "What load should the design target?",
+    "why_it_matters": "Drives caching, storage choice, code-space size and the analytics pipeline.",
+    "options": [
+     "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+     "internal tool: <100 requests/s",
+     "internet scale: 1M+ redirects/s, multi-region"
+    ],
+    "default": "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+    "severity": "medium",
+    "resolution": "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+    "resolved_by": "default"
+   },
+   {
+    "id": "analytics",
+    "question": "Which analytics are required?",
+    "why_it_matters": "Determines the event model, storage growth and whether raw click events are kept.",
+    "options": [
+     "detailed: total clicks, clicks per day, top referrers",
+     "basic: total clicks and last click time"
+    ],
+    "default": "detailed: total clicks, clicks per day, top referrers",
+    "severity": "medium",
+    "resolution": "detailed: total clicks, clicks per day, top referrers",
+    "resolved_by": "default"
+   },
+   {
+    "id": "custom_alias",
+    "question": "Should clients be able to choose a custom alias?",
+    "why_it_matters": "Adds alias validation, reserved words and a conflict (409) path.",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "default": "yes",
+    "severity": "low",
+    "resolution": "yes",
+    "resolved_by": "default"
+   },
+   {
+    "id": "expiry",
+    "question": "Should links support an optional expiry?",
+    "why_it_matters": "Adds a nullable expires_at column and a 410 Gone response.",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "default": "yes",
+    "severity": "low",
+    "resolution": "yes",
+    "resolved_by": "default"
+   },
+   {
+    "id": "rate_limit",
+    "question": "Should link creation be rate limited to prevent abuse?",
+    "why_it_matters": "Public shorteners are abused for spam/phishing; protects storage and reputation.",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "default": "yes",
+    "severity": "medium",
+    "resolution": "yes",
+    "resolved_by": "default"
+   }
+  ],
+  "assumptions": [
+   "Assumed (default): What load should the design target? -> 1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+   "Assumed (default): Which analytics are required? -> detailed: total clicks, clicks per day, top referrers",
+   "Assumed (default): Should clients be able to choose a custom alias? -> yes",
+   "Assumed (default): Should links support an optional expiry? -> yes",
+   "Assumed (default): Should link creation be rate limited to prevent abuse? -> yes"
+  ],
+  "options": {
+   "scale_target": "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+   "analytics": "detailed",
+   "custom_alias": true,
+   "expiry": true,
+   "rate_limit": true
+  },
+  "acceptance_criteria": [
+   "POST /api/v1/links returns 201 with code and short_url for a valid URL, 400 for an invalid one",
+   "GET /{code} returns 302 with Location for a known code and 404 for an unknown one",
+   "Creating many links concurrently yields unique codes and never overwrites an existing link",
+   "Click counts reported by the stats endpoint equal the number of redirects served",
+   "Every route in the implementation is documented in the OpenAPI contract and vice versa"
+  ]
+ },
+ "plan": [
+  {
+   "id": "design_architecture",
+   "title": "Design system architecture",
+   "agent": "architect",
+   "depends_on": [
+    "approve_plan"
+   ]
+  },
+  {
+   "id": "define_api_contract",
+   "title": "Define REST API contract (OpenAPI 3)",
+   "agent": "architect",
+   "depends_on": [
+    "design_architecture"
+   ]
+  },
+  {
+   "id": "define_data_schema",
+   "title": "Define persistence schema (SQL DDL)",
+   "agent": "architect",
+   "depends_on": [
+    "design_architecture"
+   ]
+  },
+  {
+   "id": "impl_core",
+   "title": "Implement core: config, codec, id generation, validation, models, errors",
+   "agent": "coder",
+   "depends_on": [
+    "design_architecture"
+   ]
+  },
+  {
+   "id": "impl_storage",
+   "title": "Implement repository + redirect cache",
+   "agent": "coder",
+   "depends_on": [
+    "impl_core",
+    "define_data_schema"
+   ]
+  },
+  {
+   "id": "impl_analytics",
+   "title": "Implement async click analytics",
+   "agent": "coder",
+   "depends_on": [
+    "impl_storage"
+   ]
+  },
+  {
+   "id": "impl_service",
+   "title": "Implement service layer (+ rate limiter)",
+   "agent": "coder",
+   "depends_on": [
+    "impl_storage",
+    "impl_analytics"
+   ]
+  },
+  {
+   "id": "impl_api",
+   "title": "Implement HTTP API conforming to the contract",
+   "agent": "coder",
+   "depends_on": [
+    "impl_service",
+    "define_api_contract"
+   ]
+  },
+  {
+   "id": "write_unit_tests",
+   "title": "Write unit tests from the design",
+   "agent": "tester",
+   "depends_on": [
+    "design_architecture"
+   ]
+  },
+  {
+   "id": "write_integration_tests",
+   "title": "Write integration + contract tests",
+   "agent": "tester",
+   "depends_on": [
+    "define_api_contract"
+   ]
+  },
+  {
+   "id": "write_docs",
+   "title": "Write README + architecture docs",
+   "agent": "docs",
+   "depends_on": [
+    "define_api_contract",
+    "define_data_schema"
+   ]
+  },
+  {
+   "id": "analyze_risks",
+   "title": "Analyse risks, trade-offs, failure scenarios",
+   "agent": "risk",
+   "depends_on": [
+    "design_architecture"
+   ]
+  },
+  {
+   "id": "validate",
+   "title": "Validate: syntax, policy, lint, contract, tests",
+   "agent": "validator",
+   "depends_on": [
+    "impl_api",
+    "write_unit_tests",
+    "write_integration_tests"
+   ]
+  },
+  {
+   "id": "approve_release",
+   "title": "G3: approve validated output",
+   "agent": "gate",
+   "depends_on": [
+    "validate",
+    "write_docs",
+    "analyze_risks"
+   ]
+  }
+ ],
+ "tasks": [
+  {
+   "id": "analyze",
+   "title": "Analyse and normalize the requirement",
+   "agent": "analyst",
+   "description": "",
+   "depends_on": [],
+   "params": {
+    "requirement": "Build a scalable URL shortener service with APIs, persistence, and analytics.",
+    "has_repo": false
+   },
+   "outputs": [
+    "spec"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2786353,
+   "finished_at": 1794419024.2790945,
+   "spawned_by": null
+  },
+  {
+   "id": "clarify",
+   "title": "G1: resolve ambiguities",
+   "agent": "clarifier",
+   "description": "",
+   "depends_on": [
+    "analyze"
+   ],
+   "params": {},
+   "outputs": [
+    "spec"
+   ],
+   "max_attempts": 1,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2793956,
+   "finished_at": 1794419024.28,
+   "spawned_by": null
+  },
+  {
+   "id": "plan",
+   "title": "Decompose into a task graph",
+   "agent": "planner",
+   "description": "",
+   "depends_on": [
+    "clarify"
+   ],
+   "params": {},
+   "outputs": [
+    "plan"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.280281,
+   "finished_at": 1794419024.2809615,
+   "spawned_by": null
+  },
+  {
+   "id": "approve_plan",
+   "title": "G2: approve spec + plan",
+   "agent": "gate",
+   "description": "",
+   "depends_on": [
+    "plan"
+   ],
+   "params": {
+    "gate": "plan"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2817135,
+   "finished_at": 1794419024.282306,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "design_architecture",
+   "title": "Design system architecture",
+   "agent": "architect",
+   "description": "Components, key decisions with alternatives, data model, scaling path",
+   "depends_on": [
+    "approve_plan"
+   ],
+   "params": {
+    "mode": "architecture"
+   },
+   "outputs": [
+    "architecture"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2831476,
+   "finished_at": 1794419024.2834768,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "define_api_contract",
+   "title": "Define REST API contract (OpenAPI 3)",
+   "agent": "architect",
+   "description": "",
+   "depends_on": [
+    "design_architecture"
+   ],
+   "params": {
+    "mode": "contract"
+   },
+   "outputs": [
+    "api_contract"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2842245,
+   "finished_at": 1794419024.2896929,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "define_data_schema",
+   "title": "Define persistence schema (SQL DDL)",
+   "agent": "architect",
+   "description": "",
+   "depends_on": [
+    "design_architecture"
+   ],
+   "params": {
+    "mode": "schema"
+   },
+   "outputs": [
+    "data_schema"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2843032,
+   "finished_at": 1794419024.292098,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_core",
+   "title": "Implement core: config, codec, id generation, validation, models, errors",
+   "agent": "coder",
+   "description": "",
+   "depends_on": [
+    "design_architecture"
+   ],
+   "params": {
+    "component": "core"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2859097,
+   "finished_at": 1794419024.3204374,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_storage",
+   "title": "Implement repository + redirect cache",
+   "agent": "coder",
+   "description": "",
+   "depends_on": [
+    "impl_core",
+    "define_data_schema"
+   ],
+   "params": {
+    "component": "storage"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 2,
+   "error": null,
+   "started_at": 1794419024.3220565,
+   "finished_at": 1794419024.5264297,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_analytics",
+   "title": "Implement async click analytics",
+   "agent": "coder",
+   "description": "",
+   "depends_on": [
+    "impl_storage"
+   ],
+   "params": {
+    "component": "analytics"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.5277414,
+   "finished_at": 1794419024.5291088,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_service",
+   "title": "Implement service layer (+ rate limiter)",
+   "agent": "coder",
+   "description": "",
+   "depends_on": [
+    "impl_storage",
+    "impl_analytics"
+   ],
+   "params": {
+    "component": "service"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.5303173,
+   "finished_at": 1794419024.5327673,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_api",
+   "title": "Implement HTTP API conforming to the contract",
+   "agent": "coder",
+   "description": "",
+   "depends_on": [
+    "impl_service",
+    "define_api_contract"
+   ],
+   "params": {
+    "component": "api"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.5341046,
+   "finished_at": 1794419024.5392869,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "write_unit_tests",
+   "title": "Write unit tests from the design",
+   "agent": "tester",
+   "description": "",
+   "depends_on": [
+    "design_architecture"
+   ],
+   "params": {
+    "component": "unit_tests"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2870595,
+   "finished_at": 1794419024.3185425,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "write_integration_tests",
+   "title": "Write integration + contract tests",
+   "agent": "tester",
+   "description": "",
+   "depends_on": [
+    "define_api_contract"
+   ],
+   "params": {
+    "component": "integration_tests"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2909975,
+   "finished_at": 1794419024.3088336,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "write_docs",
+   "title": "Write README + architecture docs",
+   "agent": "docs",
+   "description": "",
+   "depends_on": [
+    "define_api_contract",
+    "define_data_schema"
+   ],
+   "params": {},
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.2945447,
+   "finished_at": 1794419024.304869,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "analyze_risks",
+   "title": "Analyse risks, trade-offs, failure scenarios",
+   "agent": "risk",
+   "description": "",
+   "depends_on": [
+    "design_architecture"
+   ],
+   "params": {},
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": false,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.3084974,
+   "finished_at": 1794419024.3105917,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "validate",
+   "title": "Validate: syntax, policy, lint, contract, tests",
+   "agent": "validator",
+   "description": "",
+   "depends_on": [
+    "impl_api",
+    "write_unit_tests",
+    "write_integration_tests"
+   ],
+   "params": {
+    "mode": "validate",
+    "iteration": 1
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419024.5409126,
+   "finished_at": 1794419027.3437161,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "approve_release",
+   "title": "G3: approve validated output",
+   "agent": "gate",
+   "description": "",
+   "depends_on": [
+    "validate_2",
+    "write_docs",
+    "analyze_risks"
+   ],
+   "params": {
+    "gate": "release"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419030.1424985,
+   "finished_at": 1794419030.1450446,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "repair_1",
+   "title": "Repair failures from validation #1",
+   "agent": "repairer",
+   "description": "",
+   "depends_on": [
+    "validate"
+   ],
+   "params": {
+    "iteration": 1
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419027.3456469,
+   "finished_at": 1794419027.350408,
+   "spawned_by": "validate"
+  },
+  {
+   "id": "validate_2",
+   "title": "Re-validate (iteration 2)",
+   "agent": "validator",
+   "description": "",
+   "depends_on": [
+    "repair_1"
+   ],
+   "params": {
+    "mode": "validate",
+    "iteration": 2
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419027.3518884,
+   "finished_at": 1794419030.1401763,
+   "spawned_by": "validate"
+  }
+ ],
+ "impact": null,
+ "change_design": null,
+ "architecture": {
+  "style": "layered service (API -> service -> repository), async analytics pipeline",
+  "components": [
+   {
+    "name": "API layer (WSGI)",
+    "module": "shortener/api.py",
+    "responsibility": "routing, JSON (de)serialisation, error mapping, request ids, per-client rate limiting"
+   },
+   {
+    "name": "ShortenerService",
+    "module": "shortener/service.py",
+    "responsibility": "business rules: validation, code allocation with collision retry, custom aliases, expiry, redirect resolution"
+   },
+   {
+    "name": "Code generator",
+    "module": "shortener/idgen.py",
+    "responsibility": "random base62 codes (non-enumerable, coordination-free)"
+   },
+   {
+    "name": "Repository (SQLite)",
+    "module": "shortener/storage/sqlite_repo.py",
+    "responsibility": "persistence behind a LinkRepository protocol; swappable for PostgreSQL"
+   },
+   {
+    "name": "Redirect cache",
+    "module": "shortener/cache.py",
+    "responsibility": "TTL+LRU cache for the read-heavy redirect path"
+   },
+   {
+    "name": "Click recorder",
+    "module": "shortener/analytics.py",
+    "responsibility": "async, batched, load-shedding click ingestion off the hot path"
+   }
+  ],
+  "decisions": [
+   {
+    "decision": "Random 7-char base62 codes + unique constraint + retry",
+    "alternatives": "global counter + base62; hash(url) truncation",
+    "rationale": "No single coordinator, codes are not guessable, collisions are ~1e-12 per insert at 1M links and handled by retry. Counter needs a sequence service; hashing makes duplicates/collisions deterministic."
+   },
+   {
+    "decision": "Analytics written asynchronously in batches",
+    "alternatives": "synchronous insert per redirect; external queue (Kafka) + stream processor",
+    "rationale": "Keeps redirect latency independent of write load. In-process queue is the simplest step; the ClickRecorder interface is where a Kafka/Kinesis producer plugs in at scale."
+   },
+   {
+    "decision": "302 (temporary) redirects with Cache-Control: private, max-age=0",
+    "alternatives": "301 permanent redirects",
+    "rationale": "301 is cached by browsers so later clicks are never counted and links cannot be re-pointed or expired; 302 preserves analytics accuracy at the cost of extra requests."
+   },
+   {
+    "decision": "Standard-library WSGI + SQLite for the prototype",
+    "alternatives": "FastAPI + PostgreSQL + Redis",
+    "rationale": "Zero dependencies so reviewers can run it anywhere. Layering (API -> service -> repository protocol) keeps the swap to Postgres/Redis local to two modules."
+   },
+   {
+    "decision": "Denormalized click_count on links plus raw click_events",
+    "alternatives": "aggregate on read only",
+    "rationale": "O(1) total-click reads; detailed roll-ups come from an indexed events table."
+   }
+  ],
+  "data_model": {
+   "links": [
+    "code PK",
+    "target_url",
+    "created_at",
+    "expires_at",
+    "is_custom",
+    "click_count",
+    "last_click_at"
+   ],
+   "click_events": [
+    "id PK",
+    "code FK->links ON DELETE CASCADE",
+    "occurred_at",
+    "day",
+    "referrer_host",
+    "user_agent"
+   ]
+  },
+  "scaling_path": [
+   "Stateless API instances behind a load balancer; scale horizontally.",
+   "Move storage to PostgreSQL (primary + read replicas); shard links by hash(code) beyond ~1B rows.",
+   "Shared Redis cache in front of the DB for redirects (>95% hit rate expected on popular links).",
+   "Replace the in-process click queue with Kafka; aggregate with a stream job into an OLAP store.",
+   "CDN/edge redirects for the hottest codes; keep 302 semantics for analytics accuracy."
+  ],
+  "options": {
+   "custom_alias": true,
+   "expiry": true,
+   "analytics": "detailed",
+   "rate_limit": true,
+   "scale_target": "1k creates/s, 50k redirects/s at peak (design target); 100M links/year"
+  }
+ },
+ "validation_history": [
+  {
+   "iteration": 1,
+   "passed": false,
+   "timestamp": 1794419027.3430834,
+   "checks": [
+    {
+     "name": "syntax",
+     "passed": true,
+     "details": "25 files parse",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "policy",
+     "passed": true,
+     "details": "no forbidden constructs or secrets",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "lint",
+     "passed": true,
+     "details": "ruff F,E9 clean",
+     "blocking": true,
+     "data": {
+      "issues": []
+     }
+    },
+    {
+     "name": "contract",
+     "passed": true,
+     "details": "6 routes match 6 documented operations",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "tests",
+     "passed": false,
+     "details": "79/82 passed; failing: test_create_redirect_and_stats_flow, test_full_round_trip_over_http, test_concurrent_creates_and_redirects",
+     "blocking": true,
+     "data": {
+      "failures": [
+       {
+        "test": "tests.integration.test_api::test_create_redirect_and_stats_flow",
+        "message": "assert 200 == 302",
+        "detail": "tests/integration/test_api.py:13: in test_create_redirect_and_stats_flow\n    assert status == 302\nE   assert 200 == 302"
+       },
+       {
+        "test": "tests.integration.test_http_server::test_full_round_trip_over_http",
+        "message": "assert (200 == 302)",
+        "detail": "tests/integration/test_http_server.py:45: in test_full_round_trip_over_http\n    assert status == 302 and headers[\"Location\"] == \"https://example.com/x\"\nE   assert (200 == 302)"
+       },
+       {
+        "test": "tests.integration.test_http_server::test_concurrent_creates_and_redirects",
+        "message": "assert 0 == 120\n +  where 0 = <built-in method count of list object at 0x7f38d650fa00>(302)\n +    where <built-in method count of list object at 0x7f38d650fa00> = [200, 200, 200, 200, 200, 200, ...].count",
+        "detail": "tests/integration/test_http_server.py:65: in test_concurrent_creates_and_redirects\n    assert redirects.count(302) == 120\nE   assert 0 == 120\nE    +  where 0 = <built-in method count of list object at 0x7f38d650fa00>(302)\nE    +    where <built-in method count of list object at 0x7f38d650fa00> = [200, 200, 200, 200, 200, 200, ...].count"
+       }
+      ],
+      "total": 82,
+      "passed": 79
+     }
+    }
+   ]
+  },
+  {
+   "iteration": 2,
+   "passed": true,
+   "timestamp": 1794419030.139419,
+   "checks": [
+    {
+     "name": "syntax",
+     "passed": true,
+     "details": "25 files parse",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "policy",
+     "passed": true,
+     "details": "no forbidden constructs or secrets",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "lint",
+     "passed": true,
+     "details": "ruff F,E9 clean",
+     "blocking": true,
+     "data": {
+      "issues": []
+     }
+    },
+    {
+     "name": "contract",
+     "passed": true,
+     "details": "6 routes match 6 documented operations",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "tests",
+     "passed": true,
+     "details": "82/82 passed",
+     "blocking": true,
+     "data": {
+      "failures": [],
+      "total": 82,
+      "passed": 82
+     }
+    }
+   ]
+  }
+ ],
+ "risks": {
+  "risks": [
+   {
+    "title": "Abuse for phishing/malware redirects",
+    "category": "security",
+    "likelihood": "high",
+    "impact": "high",
+    "mitigation": "Rate limiting on creation is in place; add URL reputation checks (e.g. Safe Browsing) and an abuse report/takedown flow before public launch"
+   },
+   {
+    "title": "Open, unauthenticated write/delete API",
+    "category": "security",
+    "likelihood": "high",
+    "impact": "high",
+    "mitigation": "Prototype assumption. Add API keys/OAuth and per-owner authorization before exposure; DELETE must be owner-only."
+   },
+   {
+    "title": "SQLite write contention at the stated scale target",
+    "category": "scalability",
+    "likelihood": "high",
+    "impact": "medium",
+    "mitigation": "Repository protocol isolates storage; migrate to PostgreSQL (+ read replicas, sharding by code hash)."
+   },
+   {
+    "title": "Analytics loss on crash or queue overflow",
+    "category": "data",
+    "likelihood": "medium",
+    "impact": "low",
+    "mitigation": "Batched flush every 0.5s bounds loss; dropped events are counted and exposed on /healthz; move to Kafka for durable ingestion."
+   },
+   {
+    "title": "Per-instance cache serves stale data after delete",
+    "category": "reliability",
+    "likelihood": "medium",
+    "impact": "medium",
+    "mitigation": "TTL bounds staleness; deletes invalidate locally; use shared Redis with pub/sub invalidation when running multiple instances."
+   },
+   {
+    "title": "Hot links overload a single DB row (click_count)",
+    "category": "scalability",
+    "likelihood": "medium",
+    "impact": "medium",
+    "mitigation": "Counter updates are batched per flush; at higher scale use sharded counters or stream aggregation."
+   },
+   {
+    "title": "In-process rate limits are per instance",
+    "category": "security",
+    "likelihood": "medium",
+    "impact": "low",
+    "mitigation": "Acceptable for prototype; use a shared token bucket (Redis) behind a load balancer."
+   },
+   {
+    "title": "Expired rows accumulate",
+    "category": "data",
+    "likelihood": "medium",
+    "impact": "low",
+    "mitigation": "Indexed expires_at enables a periodic purge job (not yet implemented)."
+   }
+  ],
+  "tradeoffs": [
+   {
+    "choice": "302 instead of 301",
+    "gain": "accurate analytics, links can expire/be deleted",
+    "cost": "every click hits the service (no browser caching)"
+   },
+   {
+    "choice": "Async analytics",
+    "gain": "redirect latency independent of analytics writes",
+    "cost": "stats are eventually consistent (pending_events exposed); small loss window on crash"
+   },
+   {
+    "choice": "Random codes",
+    "gain": "non-enumerable, coordination-free",
+    "cost": "requires uniqueness check + retry; slightly longer codes than a counter"
+   },
+   {
+    "choice": "Stdlib WSGI + SQLite",
+    "gain": "zero dependencies, trivially runnable",
+    "cost": "not the production stack; swap required for the scale target"
+   }
+  ],
+  "failure_scenarios": [
+   {
+    "scenario": "Database unavailable",
+    "behaviour": "API returns 500 with generic error; /healthz reports degraded; analytics flush failures are logged and retried next interval"
+   },
+   {
+    "scenario": "Code collision",
+    "behaviour": "unique constraint -> retry up to 5 times -> 503 (never overwrites)"
+   },
+   {
+    "scenario": "Traffic spike on one link",
+    "behaviour": "served from cache; click queue absorbs bursts, sheds load (counted) when full"
+   },
+   {
+    "scenario": "Malformed / oversized input",
+    "behaviour": "400/413 with stable error shape; no stack traces"
+   }
+  ]
+ },
+ "audit": [
+  {
+   "gate": "clarify:scale",
+   "decision": "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419024.2796893
+  },
+  {
+   "gate": "clarify:analytics",
+   "decision": "detailed: total clicks, clicks per day, top referrers",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419024.2796915
+  },
+  {
+   "gate": "clarify:custom_alias",
+   "decision": "yes",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419024.279693
+  },
+  {
+   "gate": "clarify:expiry",
+   "decision": "yes",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419024.279694
+  },
+  {
+   "gate": "clarify:rate_limit",
+   "decision": "yes",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419024.2796953
+  },
+  {
+   "gate": "plan",
+   "decision": "approved",
+   "by": "auto-policy",
+   "comment": "non-interactive run; approval delegated to policy",
+   "ts": 1794419024.2820868
+  },
+  {
+   "gate": "release",
+   "decision": "approved",
+   "by": "auto-policy",
+   "comment": "non-interactive run; approval delegated to policy",
+   "ts": 1794419030.1447146
+  }
+ ],
+ "artifacts": {
+  "api/openapi.json": {
+   "author": "define_api_contract",
+   "bytes": 10360,
+   "sha256": "febd5b53b076"
+  },
+  "shortener/storage/schema.sql": {
+   "author": "define_data_schema",
+   "bytes": 1145,
+   "sha256": "1a2bcebb3b91"
+  },
+  "shortener/__init__.py": {
+   "author": "impl_core",
+   "bytes": 196,
+   "sha256": "9c97d4ff27fe"
+  },
+  "tests/conftest.py": {
+   "author": "write_unit_tests",
+   "bytes": 2787,
+   "sha256": "857b25049ce8"
+  },
+  "shortener/config.py": {
+   "author": "impl_core",
+   "bytes": 1166,
+   "sha256": "c4ca381f5349"
+  },
+  "tests/integration/test_api.py": {
+   "author": "write_integration_tests",
+   "bytes": 3977,
+   "sha256": "a8f1c5724ab6"
+  },
+  "docs/README.md": {
+   "author": "write_docs",
+   "bytes": 1986,
+   "sha256": "4fe2edd126e3"
+  },
+  "tests/unit/test_codec_and_idgen.py": {
+   "author": "write_unit_tests",
+   "bytes": 928,
+   "sha256": "6e37e2566a70"
+  },
+  "shortener/codec.py": {
+   "author": "impl_core",
+   "bytes": 883,
+   "sha256": "56a88316728d"
+  },
+  "tests/integration/test_http_server.py": {
+   "author": "write_integration_tests",
+   "bytes": 2657,
+   "sha256": "1d5c4204b6f4"
+  },
+  "docs/ARCHITECTURE.md": {
+   "author": "write_docs",
+   "bytes": 3782,
+   "sha256": "68abf5bc9ac6"
+  },
+  "tests/unit/test_validation.py": {
+   "author": "write_unit_tests",
+   "bytes": 1130,
+   "sha256": "56d361641bad"
+  },
+  "shortener/idgen.py": {
+   "author": "impl_core",
+   "bytes": 868,
+   "sha256": "3d462b0c883b"
+  },
+  "tests/integration/test_contract.py": {
+   "author": "write_integration_tests",
+   "bytes": 2361,
+   "sha256": "91fcf9908f89"
+  },
+  "tests/unit/test_cache.py": {
+   "author": "write_unit_tests",
+   "bytes": 983,
+   "sha256": "729a90ecf606"
+  },
+  "shortener/validation.py": {
+   "author": "impl_core",
+   "bytes": 1424,
+   "sha256": "4c57a795f0b8"
+  },
+  "tests/unit/test_service.py": {
+   "author": "write_unit_tests",
+   "bytes": 2781,
+   "sha256": "d04cad5e971d"
+  },
+  "shortener/models.py": {
+   "author": "impl_core",
+   "bytes": 1276,
+   "sha256": "dad6f41a25c2"
+  },
+  "tests/unit/test_analytics.py": {
+   "author": "write_unit_tests",
+   "bytes": 1691,
+   "sha256": "872ee361af82"
+  },
+  "shortener/errors.py": {
+   "author": "impl_core",
+   "bytes": 1131,
+   "sha256": "498fc2891850"
+  },
+  "tests/unit/test_ratelimit.py": {
+   "author": "write_unit_tests",
+   "bytes": 798,
+   "sha256": "b81f0cb7efcf"
+  },
+  "pyproject.toml": {
+   "author": "impl_core",
+   "bytes": 238,
+   "sha256": "104845a26ffc"
+  },
+  "Dockerfile": {
+   "author": "impl_core",
+   "bytes": 225,
+   "sha256": "140f28c74348"
+  },
+  ".gitignore": {
+   "author": "impl_core",
+   "bytes": 51,
+   "sha256": "f38aab44efcd"
+  },
+  "shortener/storage/__init__.py": {
+   "author": "impl_storage",
+   "bytes": 624,
+   "sha256": "4fe74ede7366"
+  },
+  "shortener/storage/sqlite_repo.py": {
+   "author": "impl_storage",
+   "bytes": 5481,
+   "sha256": "997621b577ab"
+  },
+  "shortener/cache.py": {
+   "author": "impl_storage",
+   "bytes": 1908,
+   "sha256": "8f428fc0bccc"
+  },
+  "shortener/analytics.py": {
+   "author": "impl_analytics",
+   "bytes": 2569,
+   "sha256": "5bb0c84b2d14"
+  },
+  "shortener/service.py": {
+   "author": "impl_service",
+   "bytes": 4391,
+   "sha256": "9ffc8924f5ae"
+  },
+  "shortener/ratelimit.py": {
+   "author": "impl_service",
+   "bytes": 1540,
+   "sha256": "ad3fc3298261"
+  },
+  "shortener/api.py": {
+   "author": "repair_1",
+   "bytes": 7362,
+   "sha256": "1e97ac72e332"
+  },
+  "shortener/server.py": {
+   "author": "impl_api",
+   "bytes": 1592,
+   "sha256": "246fa5a23e85"
+  }
+ },
+ "contract_coverage": {
+  "covered": [
+   "GET /healthz",
+   "POST /api/v1/links",
+   "GET /api/v1/links/{code}",
+   "DELETE /api/v1/links/{code}",
+   "GET /api/v1/links/{code}/stats",
+   "GET /{code}"
+  ],
+  "uncovered": [],
+  "ratio": 1.0
+ }
+}

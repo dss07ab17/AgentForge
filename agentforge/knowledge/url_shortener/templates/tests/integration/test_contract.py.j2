@@ -1,0 +1,48 @@
+"""Contract tests: the implementation and api/openapi.json must agree."""
+import json
+from pathlib import Path
+
+import pytest
+
+from shortener.api import ROUTES
+
+SPEC = json.loads((Path(__file__).resolve().parents[2] / "api" / "openapi.json").read_text(encoding="utf-8"))
+
+
+def documented_operations():
+    return {(method.upper(), path) for path, ops in SPEC["paths"].items() for method in ops}
+
+
+def test_every_route_is_documented():
+    implemented = {(m, p) for m, p, _ in ROUTES}
+    assert implemented == documented_operations()
+
+
+def check_schema(instance, schema):
+    """Minimal JSON-schema check: required fields and primitive types."""
+    if "$ref" in schema:
+        schema = SPEC["components"]["schemas"][schema["$ref"].split("/")[-1]]
+    for field in schema.get("required", []):
+        assert field in instance, f"missing required field {field!r}"
+    types = {"string": str, "integer": int, "boolean": bool, "object": dict, "array": list}
+    for name, prop in schema.get("properties", {}).items():
+        if name in instance and instance[name] is not None and "type" in prop:
+            assert isinstance(instance[name], types[prop["type"]]), f"{name} should be {prop['type']}"
+
+
+@pytest.mark.parametrize("path,method,status,make_request", [
+    ("/api/v1/links", "post", "201", lambda c, code: c.request("POST", "/api/v1/links", {"url": "https://e.x"})),
+    ("/api/v1/links/{code}", "get", "200", lambda c, code: c.request("GET", f"/api/v1/links/{code}")),
+    ("/api/v1/links/{code}/stats", "get", "200", lambda c, code: c.request("GET", f"/api/v1/links/{code}/stats")),
+    ("/api/v1/links/{code}", "get", "404", lambda c, code: c.request("GET", "/api/v1/links/nope")),
+    ("/api/v1/links", "post", "400", lambda c, code: c.request("POST", "/api/v1/links", {"url": "bad"})),
+    ("/healthz", "get", "200", lambda c, code: c.request("GET", "/healthz")),
+])
+def test_responses_match_documented_schemas(client, path, method, status, make_request):
+    _, _, created = client.request("POST", "/api/v1/links", {"url": "https://seed.example"})
+    actual_status, _, body = make_request(client, created["code"])
+    assert str(actual_status) == status
+    response_spec = SPEC["paths"][path][method]["responses"][status]
+    schema = response_spec.get("content", {}).get("application/json", {}).get("schema")
+    if schema:
+        check_schema(body, schema)

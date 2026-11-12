@@ -1,0 +1,15 @@
+{
+  "clarifications": {
+    "system": "yes, a URL shortener with redirects",
+    "performance": "p99 redirect latency < 50 ms (server side) with cache",
+    "analytics": "basic: total clicks and last click time",
+    "users": "out of scope for v1 (anonymous API); design leaves room for ownership",
+    "custom_alias": "no",
+    "expiry": "no",
+    "rate_limit": "yes"
+  },
+  "approvals": {
+    "plan": true,
+    "release": true
+  }
+}

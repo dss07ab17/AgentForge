@@ -1,0 +1,94 @@
+"""End-to-end behaviour through the WSGI application (HTTP semantics, wiring, errors)."""
+{% if o.rate_limit %}
+from shortener.api import Application
+from shortener.ratelimit import TokenBucketLimiter
+{% endif %}
+
+
+def test_create_redirect_and_stats_flow(client, recorder):
+    status, headers, body = client.request("POST", "/api/v1/links", {"url": "https://example.com/docs"})
+    assert status == 201
+    assert body["short_url"] == f"https://sho.rt/{body['code']}"
+    assert headers["Location"] == f"/api/v1/links/{body['code']}"
+
+    status, headers, _ = client.request("GET", f"/{body['code']}", headers={"Referer": "https://twitter.example/x"})
+    assert status == 302
+    assert headers["Location"] == "https://example.com/docs"
+
+    recorder.flush()
+    status, _, stats = client.request("GET", f"/api/v1/links/{body['code']}/stats")
+    assert status == 200 and stats["total_clicks"] == 1
+
+
+def test_get_and_delete_link(client):
+    _, _, created = client.request("POST", "/api/v1/links", {"url": "https://example.com"})
+    status, _, fetched = client.request("GET", f"/api/v1/links/{created['code']}")
+    assert status == 200 and fetched["target_url"] == "https://example.com"
+    status, _, _ = client.request("DELETE", f"/api/v1/links/{created['code']}")
+    assert status == 204
+    status, _, body = client.request("GET", f"/{created['code']}")
+    assert status == 404 and body["error"]["code"] == "not_found"
+
+
+def test_validation_errors_are_400_with_stable_error_shape(client):
+    for payload in ({"url": "ftp://x"}, {}, {"url": 5}):
+        status, _, body = client.request("POST", "/api/v1/links", payload)
+        assert status == 400
+        assert set(body["error"]) == {"code", "message"}
+    status, _, body = client.request("POST", "/api/v1/links", raw=b"{not json")
+    assert status == 400
+
+
+def test_oversized_body_is_rejected(client):
+    status, _, body = client.request("POST", "/api/v1/links", raw=b"x" * 20_000)
+    assert status == 413 and body["error"]["code"] == "payload_too_large"
+
+
+def test_unknown_route_and_wrong_method(client):
+    assert client.request("GET", "/api/v1/nope/x/y")[0] == 404
+    status, headers, _ = client.request("PUT", "/api/v1/links")
+    assert status == 405 and "POST" in headers["Allow"]
+
+
+def test_request_id_is_propagated(client):
+    _, headers, _ = client.request("GET", "/healthz", headers={"X-Request-ID": "abc123"})
+    assert headers["X-Request-ID"] == "abc123"
+
+
+def test_unexpected_errors_do_not_leak_internals(client, service, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("secret stack detail")
+
+    monkeypatch.setattr(service, "health", boom)
+    status, _, body = client.request("GET", "/healthz")
+    assert status == 500 and "secret" not in body["error"]["message"]
+{% if o.custom_alias %}
+
+
+def test_custom_alias_conflict_is_409(client):
+    assert client.request("POST", "/api/v1/links", {"url": "https://a.example", "custom_alias": "launch"})[0] == 201
+    status, _, body = client.request("POST", "/api/v1/links", {"url": "https://b.example", "custom_alias": "launch"})
+    assert status == 409 and body["error"]["code"] == "conflict"
+{% endif %}
+{% if o.expiry %}
+
+
+def test_expired_link_returns_410(client, clock):
+    _, _, created = client.request("POST", "/api/v1/links", {"url": "https://a.example", "expires_in_seconds": 60})
+    assert created["expires_at"] == "2026-01-01T12:01:00Z"
+    clock.advance(seconds=61)
+    status, _, body = client.request("GET", f"/{created['code']}")
+    assert status == 410 and body["error"]["code"] == "gone"
+{% endif %}
+{% if o.rate_limit %}
+
+
+def test_link_creation_is_rate_limited(service, settings):
+    from conftest import WSGIClient
+
+    limited = WSGIClient(Application(service, settings, limiter=TokenBucketLimiter(per_minute=2)))
+    codes = [limited.request("POST", "/api/v1/links", {"url": "https://a.example"})[0] for _ in range(3)]
+    assert codes == [201, 201, 429]
+    status, headers, _ = limited.request("POST", "/api/v1/links", {"url": "https://a.example"})
+    assert status == 429 and int(headers["Retry-After"]) >= 1
+{% endif %}

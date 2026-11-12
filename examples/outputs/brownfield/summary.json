@@ -1,0 +1,950 @@
+{
+ "meta": {
+  "run_id": "brownfield",
+  "requirement": "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return HTTP 410. Also fix the bug where a newly generated code can silently overwrite an existing link.",
+  "status": "success",
+  "llm": "offline",
+  "llm_calls": 0,
+  "approval": "auto",
+  "duration_s": 0.69,
+  "artifacts_path": "workspace/",
+  "patch": "changes.patch",
+  "message": "Validated change exported as changes.patch; the original repository was not modified.",
+  "limitations": [
+   "Offline mode: agents use deterministic strategies and domain blueprints (URL shortener, the bundled brownfield sample). Other domains/repositories need `--llm anthropic`.",
+   "Validation proves the generated tests pass and the contract matches; it cannot prove the tests are exhaustive - human review at G3 remains essential."
+  ]
+ },
+ "spec": {
+  "raw": "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return HTTP 410. Also fix the bug where a newly generated code can silently overwrite an existing link.",
+  "req_type": "brownfield",
+  "domain": "existing_codebase",
+  "title": "Add optional link expiration: clients can pass ttl_seconds...",
+  "intent": "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return HTTP 410. Also fix the bug where a newly generated code can silently overwrite an existing link.",
+  "functional": [
+   "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return http 410",
+   "Fix the bug where a newly generated code can silently overwrite an existing link"
+  ],
+  "non_functional": [
+   "No regression in existing behaviour (existing tests must keep passing)",
+   "Changes are minimal, localized and follow existing code conventions"
+  ],
+  "out_of_scope": [
+   "Unrelated refactoring"
+  ],
+  "ambiguities": [
+   {
+    "id": "compat",
+    "question": "Must existing API behaviour and stored data stay backward compatible?",
+    "why_it_matters": "Decides between additive changes + migration and a breaking change.",
+    "options": [
+     "yes: additive, backward-compatible change with migration",
+     "no: breaking change acceptable"
+    ],
+    "default": "yes: additive, backward-compatible change with migration",
+    "severity": "low",
+    "resolution": "yes: additive, backward-compatible change with migration",
+    "resolved_by": "default"
+   },
+   {
+    "id": "ttl_bounds",
+    "question": "What TTL range is valid?",
+    "why_it_matters": "Prevents nonsense values (0, negative, centuries).",
+    "options": [
+     "1 second to 10 years, integer seconds",
+     "1 minute to 1 year"
+    ],
+    "default": "1 second to 10 years, integer seconds",
+    "severity": "low",
+    "resolution": "1 second to 10 years, integer seconds",
+    "resolved_by": "default"
+   }
+  ],
+  "assumptions": [
+   "Assumed (default): Must existing API behaviour and stored data stay backward compatible? -> yes: additive, backward-compatible change with migration",
+   "Assumed (default): What TTL range is valid? -> 1 second to 10 years, integer seconds"
+  ],
+  "options": {
+   "compat": "yes: additive, backward-compatible change with migration",
+   "ttl_bounds": "1 second to 10 years, integer seconds"
+  },
+  "acceptance_criteria": [
+   "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return http 410 is implemented and covered by an automated test",
+   "Fix the bug where a newly generated code can silently overwrite an existing link is implemented and covered by an automated test"
+  ]
+ },
+ "plan": [
+  {
+   "id": "design_change",
+   "title": "Design the change (per-module plan, API + data migration)",
+   "agent": "architect",
+   "depends_on": [
+    "approve_plan"
+   ]
+  },
+  {
+   "id": "baseline_tests",
+   "title": "Run existing test suite on the untouched baseline",
+   "agent": "validator",
+   "depends_on": [
+    "approve_plan"
+   ]
+  },
+  {
+   "id": "impl_codes",
+   "title": "Change app/codes.py",
+   "agent": "coder",
+   "depends_on": [
+    "design_change"
+   ]
+  },
+  {
+   "id": "impl_db",
+   "title": "Change app/db.py",
+   "agent": "coder",
+   "depends_on": [
+    "design_change"
+   ]
+  },
+  {
+   "id": "impl_store",
+   "title": "Change app/store.py",
+   "agent": "coder",
+   "depends_on": [
+    "design_change"
+   ]
+  },
+  {
+   "id": "impl_service",
+   "title": "Change app/service.py",
+   "agent": "coder",
+   "depends_on": [
+    "design_change",
+    "impl_codes",
+    "impl_store"
+   ]
+  },
+  {
+   "id": "impl_web",
+   "title": "Change app/web.py",
+   "agent": "coder",
+   "depends_on": [
+    "design_change",
+    "impl_db",
+    "impl_service"
+   ]
+  },
+  {
+   "id": "update_tests",
+   "title": "Add regression + feature tests",
+   "agent": "tester",
+   "depends_on": [
+    "design_change"
+   ]
+  },
+  {
+   "id": "update_docs",
+   "title": "Update README / changelog",
+   "agent": "docs",
+   "depends_on": [
+    "impl_codes",
+    "impl_db",
+    "impl_store",
+    "impl_service",
+    "impl_web"
+   ]
+  },
+  {
+   "id": "analyze_risks",
+   "title": "Analyse risks, trade-offs, failure scenarios",
+   "agent": "risk",
+   "depends_on": [
+    "design_change"
+   ]
+  },
+  {
+   "id": "validate",
+   "title": "Validate: syntax, policy, lint, tests, regression vs baseline",
+   "agent": "validator",
+   "depends_on": [
+    "impl_codes",
+    "impl_db",
+    "impl_store",
+    "impl_service",
+    "impl_web",
+    "update_tests",
+    "baseline_tests"
+   ]
+  },
+  {
+   "id": "approve_release",
+   "title": "G3: approve the diff",
+   "agent": "gate",
+   "depends_on": [
+    "validate",
+    "update_docs",
+    "analyze_risks"
+   ]
+  }
+ ],
+ "tasks": [
+  {
+   "id": "analyze",
+   "title": "Analyse and normalize the requirement",
+   "agent": "analyst",
+   "description": "",
+   "depends_on": [],
+   "params": {
+    "requirement": "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return HTTP 410. Also fix the bug where a newly generated code can silently overwrite an existing link.",
+    "has_repo": true
+   },
+   "outputs": [
+    "spec"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8140712,
+   "finished_at": 1794419020.8152778,
+   "spawned_by": null
+  },
+  {
+   "id": "codebase",
+   "title": "Analyse existing codebase + impact",
+   "agent": "codebase_analyst",
+   "description": "",
+   "depends_on": [],
+   "params": {
+    "requirement": "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return HTTP 410. Also fix the bug where a newly generated code can silently overwrite an existing link."
+   },
+   "outputs": [
+    "codebase",
+    "impact"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8151596,
+   "finished_at": 1794419020.8199646,
+   "spawned_by": null
+  },
+  {
+   "id": "clarify",
+   "title": "G1: resolve ambiguities",
+   "agent": "clarifier",
+   "description": "",
+   "depends_on": [
+    "analyze",
+    "codebase"
+   ],
+   "params": {},
+   "outputs": [
+    "spec"
+   ],
+   "max_attempts": 1,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8204343,
+   "finished_at": 1794419020.8210044,
+   "spawned_by": null
+  },
+  {
+   "id": "plan",
+   "title": "Decompose into a task graph",
+   "agent": "planner",
+   "description": "",
+   "depends_on": [
+    "clarify"
+   ],
+   "params": {},
+   "outputs": [
+    "plan"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.821814,
+   "finished_at": 1794419020.822865,
+   "spawned_by": null
+  },
+  {
+   "id": "approve_plan",
+   "title": "G2: approve spec + plan",
+   "agent": "gate",
+   "description": "",
+   "depends_on": [
+    "plan"
+   ],
+   "params": {
+    "gate": "plan"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8241892,
+   "finished_at": 1794419020.824676,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "design_change",
+   "title": "Design the change (per-module plan, API + data migration)",
+   "agent": "architect",
+   "description": "",
+   "depends_on": [
+    "approve_plan"
+   ],
+   "params": {
+    "mode": "change"
+   },
+   "outputs": [
+    "change_design"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8258953,
+   "finished_at": 1794419020.8280566,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "baseline_tests",
+   "title": "Run existing test suite on the untouched baseline",
+   "agent": "validator",
+   "description": "",
+   "depends_on": [
+    "approve_plan"
+   ],
+   "params": {
+    "mode": "baseline"
+   },
+   "outputs": [
+    "baseline_results"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8259866,
+   "finished_at": 1794419021.1800992,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_codes",
+   "title": "Change app/codes.py",
+   "agent": "coder",
+   "description": "direct match on code, new_code",
+   "depends_on": [
+    "design_change"
+   ],
+   "params": {
+    "files": [
+     "app/codes.py"
+    ]
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8296106,
+   "finished_at": 1794419020.836527,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_db",
+   "title": "Change app/db.py",
+   "agent": "coder",
+   "description": "direct match on code, created, link, links, url",
+   "depends_on": [
+    "design_change"
+   ],
+   "params": {
+    "files": [
+     "app/db.py"
+    ]
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8296921,
+   "finished_at": 1794419020.8330016,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_store",
+   "title": "Change app/store.py",
+   "agent": "coder",
+   "description": "direct match on code, created, insert, link, links, replace",
+   "depends_on": [
+    "design_change"
+   ],
+   "params": {
+    "files": [
+     "app/store.py"
+    ]
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8299794,
+   "finished_at": 1794419020.8349066,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_service",
+   "title": "Change app/service.py",
+   "agent": "coder",
+   "description": "direct match on code, link, links, resolve, shortening, url",
+   "depends_on": [
+    "design_change",
+    "impl_codes",
+    "impl_store"
+   ],
+   "params": {
+    "files": [
+     "app/service.py"
+    ]
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8404815,
+   "finished_at": 1794419020.8450036,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "impl_web",
+   "title": "Change app/web.py",
+   "agent": "coder",
+   "description": "direct match on app, code, environ, start_response, status",
+   "depends_on": [
+    "design_change",
+    "impl_db",
+    "impl_service"
+   ],
+   "params": {
+    "files": [
+     "app/web.py"
+    ]
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8467813,
+   "finished_at": 1794419020.8486571,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "update_tests",
+   "title": "Add regression + feature tests",
+   "agent": "tester",
+   "description": "",
+   "depends_on": [
+    "design_change"
+   ],
+   "params": {
+    "component": "brownfield"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8362997,
+   "finished_at": 1794419020.8405998,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "update_docs",
+   "title": "Update README / changelog",
+   "agent": "docs",
+   "description": "",
+   "depends_on": [
+    "impl_codes",
+    "impl_db",
+    "impl_store",
+    "impl_service",
+    "impl_web"
+   ],
+   "params": {},
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8497024,
+   "finished_at": 1794419020.8504958,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "analyze_risks",
+   "title": "Analyse risks, trade-offs, failure scenarios",
+   "agent": "risk",
+   "description": "",
+   "depends_on": [
+    "design_change"
+   ],
+   "params": {},
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": false,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419020.8363929,
+   "finished_at": 1794419020.8416643,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "validate",
+   "title": "Validate: syntax, policy, lint, tests, regression vs baseline",
+   "agent": "validator",
+   "description": "",
+   "depends_on": [
+    "impl_codes",
+    "impl_db",
+    "impl_store",
+    "impl_service",
+    "impl_web",
+    "update_tests",
+    "baseline_tests"
+   ],
+   "params": {
+    "mode": "validate",
+    "iteration": 1
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419021.1814077,
+   "finished_at": 1794419021.4913588,
+   "spawned_by": "plan"
+  },
+  {
+   "id": "approve_release",
+   "title": "G3: approve the diff",
+   "agent": "gate",
+   "description": "",
+   "depends_on": [
+    "validate",
+    "update_docs",
+    "analyze_risks"
+   ],
+   "params": {
+    "gate": "release"
+   },
+   "outputs": [],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419021.4927557,
+   "finished_at": 1794419021.4947417,
+   "spawned_by": "plan"
+  }
+ ],
+ "impact": {
+  "impacted_modules": [
+   {
+    "path": "app/codes.py",
+    "score": 2,
+    "matched": [
+     "code",
+     "new_code"
+    ],
+    "symbols": [
+     "new_code"
+    ],
+    "reason": "direct match on code, new_code",
+    "confidence": "medium"
+   },
+   {
+    "path": "app/db.py",
+    "score": 5,
+    "matched": [
+     "code",
+     "created",
+     "link",
+     "links",
+     "url"
+    ],
+    "symbols": [],
+    "reason": "direct match on code, created, link, links, url",
+    "confidence": "high"
+   },
+   {
+    "path": "app/store.py",
+    "score": 9,
+    "matched": [
+     "code",
+     "created",
+     "insert",
+     "link",
+     "links",
+     "replace",
+     "save",
+     "store",
+     "url"
+    ],
+    "symbols": [
+     "save_link",
+     "get_url"
+    ],
+    "reason": "direct match on code, created, insert, link, links, replace",
+    "confidence": "high"
+   },
+   {
+    "path": "app/service.py",
+    "score": 6,
+    "matched": [
+     "code",
+     "link",
+     "links",
+     "resolve",
+     "shortening",
+     "url"
+    ],
+    "symbols": [
+     "resolve"
+    ],
+    "reason": "direct match on code, link, links, resolve, shortening, url",
+    "confidence": "high"
+   },
+   {
+    "path": "app/web.py",
+    "score": 5,
+    "matched": [
+     "app",
+     "code",
+     "environ",
+     "start_response",
+     "status"
+    ],
+    "symbols": [
+     "app"
+    ],
+    "reason": "direct match on app, code, environ, start_response, status",
+    "confidence": "high"
+   }
+  ],
+  "apis": [
+   "/shorten (app/web.py)"
+  ],
+  "data_stores": [
+   "links"
+  ],
+  "data_flows": [
+   "app/web.py -> app/__init__.py",
+   "app/web.py -> app/db.py",
+   "app/web.py -> app/service.py -> app/__init__.py",
+   "app/web.py -> app/service.py -> app/codes.py",
+   "app/web.py -> app/service.py -> app/store.py"
+  ],
+  "entry_points": [
+   "app/web.py"
+  ],
+  "tests_affected": [
+   "tests/test_service.py"
+  ],
+  "risk_hotspots": [
+   {
+    "file": "app/db.py",
+    "line": 14,
+    "issue": "SQLite connection shared across threads without a lock",
+    "code": "conn = sqlite3.connect(path, check_same_thread=False)"
+   },
+   {
+    "file": "app/store.py",
+    "line": 7,
+    "issue": "INSERT OR REPLACE silently overwrites existing rows on key conflict",
+    "code": "\"INSERT OR REPLACE INTO links (code, url, created) VALUES (?, ?, ?)\","
+   },
+   {
+    "file": "app/web.py",
+    "line": 11,
+    "issue": "module-level mutable global state",
+    "code": "global CONN"
+   }
+  ],
+  "layers": {
+   "app/codes.py": 0,
+   "app/db.py": 0,
+   "app/store.py": 0,
+   "app/service.py": 1,
+   "app/web.py": 2
+  }
+ },
+ "change_design": {
+  "summary": "Add optional link expiration: clients can pass ttl_seconds when shortening and expired links must return HTTP 410. Also fix the bug where a newly generated code can silently overwrite an existing link.",
+  "module_changes": [
+   {
+    "module": "app/codes.py",
+    "changes": [
+     "no change expected; collisions are handled by the caller"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "module": "app/db.py",
+    "changes": [
+     "add nullable expires_at column; idempotent forward migration for existing databases"
+    ],
+    "confidence": "high"
+   },
+   {
+    "module": "app/store.py",
+    "changes": [
+     "replace INSERT OR REPLACE with strict INSERT; raise DuplicateCode on conflict",
+     "persist and return expires_at"
+    ],
+    "confidence": "high"
+   },
+   {
+    "module": "app/service.py",
+    "changes": [
+     "validate ttl; compute expires_at; reject expired links on resolve",
+     "retry code generation on DuplicateCode with a bounded number of attempts"
+    ],
+    "confidence": "high"
+   },
+   {
+    "module": "app/web.py",
+    "changes": [
+     "accept optional ttl_seconds; map expired links to the agreed status code"
+    ],
+    "confidence": "high"
+   }
+  ],
+  "api_changes": [
+   "POST /shorten: new optional field ttl_seconds (1 second to 10 years, integer seconds)",
+   "GET /<code>: expired -> 410 Gone"
+  ],
+  "data_migration": "additive nullable column, applied automatically on connect; no backfill needed",
+  "compatibility": "backward compatible: existing requests/responses unchanged, old databases migrate in place",
+  "test_strategy": [
+   "regression test reproducing the overwrite bug",
+   "unit tests for TTL boundaries",
+   "HTTP-level test for expiry status",
+   "migration test on a v1-schema database",
+   "full existing suite must keep passing (regression gate vs baseline)"
+  ]
+ },
+ "architecture": null,
+ "validation_history": [
+  {
+   "iteration": 1,
+   "passed": true,
+   "timestamp": 1794419021.4909744,
+   "checks": [
+    {
+     "name": "syntax",
+     "passed": true,
+     "details": "8 files parse",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "policy",
+     "passed": true,
+     "details": "no forbidden constructs or secrets",
+     "blocking": true,
+     "data": {}
+    },
+    {
+     "name": "lint",
+     "passed": true,
+     "details": "ruff F,E9 clean",
+     "blocking": true,
+     "data": {
+      "issues": []
+     }
+    },
+    {
+     "name": "tests",
+     "passed": true,
+     "details": "17/17 passed",
+     "blocking": true,
+     "data": {
+      "failures": [],
+      "total": 17,
+      "passed": 17
+     }
+    },
+    {
+     "name": "regression",
+     "passed": true,
+     "details": "3 baseline tests still pass",
+     "blocking": true,
+     "data": {
+      "baseline_passed": 3,
+      "regressed": []
+     }
+    }
+   ]
+  }
+ ],
+ "risks": {
+  "risks": [
+   {
+    "title": "Pre-existing issue in app/db.py:14: SQLite connection shared across threads without a lock",
+    "category": "reliability",
+    "likelihood": "medium",
+    "impact": "medium",
+    "mitigation": "Out of scope; flagged for follow-up"
+   },
+   {
+    "title": "Pre-existing issue in app/store.py:7: INSERT OR REPLACE silently overwrites existing rows on key conflict",
+    "category": "reliability",
+    "likelihood": "medium",
+    "impact": "high",
+    "mitigation": "Fixed by this change"
+   },
+   {
+    "title": "Pre-existing issue in app/web.py:11: module-level mutable global state",
+    "category": "reliability",
+    "likelihood": "medium",
+    "impact": "medium",
+    "mitigation": "Out of scope; flagged for follow-up"
+   },
+   {
+    "title": "Schema migration on live databases",
+    "category": "data",
+    "likelihood": "low",
+    "impact": "high",
+    "mitigation": "Additive nullable column, idempotent, tested against a v1 database; take a backup before deploy."
+   },
+   {
+    "title": "Callers relying on old store.get_url signature",
+    "category": "delivery",
+    "likelihood": "low",
+    "impact": "medium",
+    "mitigation": "Kept get_url as a backward-compatible wrapper; new code uses get_link."
+   },
+   {
+    "title": "Clock skew across instances affects expiry",
+    "category": "reliability",
+    "likelihood": "low",
+    "impact": "low",
+    "mitigation": "Expiry uses server time at resolve; acceptable at second-level TTL granularity."
+   }
+  ],
+  "tradeoffs": [
+   {
+    "choice": "Retry on collision vs longer codes",
+    "gain": "keeps existing 5-char code format",
+    "cost": "bounded retries; code space (26^5 ~ 11.9M) will need longer codes as volume grows"
+   },
+   {
+    "choice": "410 Gone for expired links",
+    "gain": "clients can distinguish expired from unknown",
+    "cost": "reveals that a code once existed"
+   }
+  ],
+  "failure_scenarios": [
+   {
+    "scenario": "Code space nearly exhausted",
+    "behaviour": "503 after MAX_CODE_ATTEMPTS; monitor and increase CODE_LENGTH"
+   },
+   {
+    "scenario": "Old database without expires_at",
+    "behaviour": "migrated in place on first connect"
+   }
+  ]
+ },
+ "audit": [
+  {
+   "gate": "clarify:compat",
+   "decision": "yes: additive, backward-compatible change with migration",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419020.8207538
+  },
+  {
+   "gate": "clarify:ttl_bounds",
+   "decision": "1 second to 10 years, integer seconds",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419020.8207562
+  },
+  {
+   "gate": "plan",
+   "decision": "approved",
+   "by": "auto-policy",
+   "comment": "non-interactive run; approval delegated to policy",
+   "ts": 1794419020.8245215
+  },
+  {
+   "gate": "release",
+   "decision": "approved",
+   "by": "auto-policy",
+   "comment": "non-interactive run; approval delegated to policy",
+   "ts": 1794419021.4945903
+  }
+ ],
+ "artifacts": {
+  "app/db.py": {
+   "author": "impl_db",
+   "bytes": 696,
+   "sha256": "5a92cb8451e5"
+  },
+  "app/store.py": {
+   "author": "impl_store",
+   "bytes": 992,
+   "sha256": "e2a934cc79cb"
+  },
+  "tests/test_expiry_and_collisions.py": {
+   "author": "update_tests",
+   "bytes": 3775,
+   "sha256": "91ceb850a83f"
+  },
+  "app/service.py": {
+   "author": "impl_service",
+   "bytes": 1654,
+   "sha256": "b5d271cd369f"
+  },
+  "app/web.py": {
+   "author": "impl_web",
+   "bytes": 1694,
+   "sha256": "6e73b5845119"
+  },
+  "README.md": {
+   "author": "update_docs",
+   "bytes": 658,
+   "sha256": "085db01f3dfe"
+  }
+ },
+ "contract_coverage": null
+}

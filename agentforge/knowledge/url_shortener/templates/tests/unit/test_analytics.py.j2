@@ -1,0 +1,45 @@
+from shortener.analytics import ClickRecorder
+from shortener.models import ClickEvent
+
+
+def test_clicks_are_buffered_until_flush(service, recorder, repo):
+    link = service.create_link("https://example.com")
+    for _ in range(3):
+        service.resolve(link.code{% if o.analytics == "detailed" %}, referrer="https://news.example/item", user_agent="pytest"{% endif %})
+    assert repo.stats(link.code)["total_clicks"] == 0  # hot path did no DB write
+    assert recorder.flush() == 3
+    stats = service.get_stats(link.code)
+    assert stats["total_clicks"] == 3
+    assert stats["pending_events"] == 0
+    assert stats["last_click_at"] is not None
+{% if o.analytics == "detailed" %}
+    assert stats["clicks_by_day"] == [{"day": "2026-01-01", "clicks": 3}]
+    assert stats["top_referrers"] == [{"referrer": "news.example", "clicks": 3}]
+{% endif %}
+
+
+def test_full_queue_drops_events_instead_of_blocking(repo, service, clock):
+    small = ClickRecorder(repo, max_queue=2)
+    for _ in range(5):
+        small.record(ClickEvent(code="x", occurred_at=clock()))
+    assert small.pending() == 2
+    assert small.dropped == 3
+
+
+def test_storage_failure_does_not_crash_the_recorder(clock):
+    class BrokenRepo:
+        def record_clicks(self, events):
+            raise RuntimeError("database down")
+
+    rec = ClickRecorder(BrokenRepo())
+    rec.record(ClickEvent(code="x", occurred_at=clock()))
+    assert rec.flush() == 0  # logged, swallowed, worker survives
+
+
+def test_background_worker_flushes_on_stop(repo, service):
+    link = service.create_link("https://example.com")
+    rec = ClickRecorder(repo, flush_interval=60)
+    rec.start()
+    rec.record(ClickEvent(code=link.code, occurred_at=service.clock()))
+    rec.stop()
+    assert repo.stats(link.code)["total_clicks"] == 1

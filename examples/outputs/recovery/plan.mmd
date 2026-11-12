@@ -1,0 +1,51 @@
+flowchart TD
+    analyze["Analyse and normalize the requirement<br/><i>analyst</i>"]:::done
+    clarify["G1: resolve ambiguities<br/><i>clarifier</i>"]:::done
+    plan["Decompose into a task graph<br/><i>planner</i>"]:::done
+    approve_plan["G2: approve spec + plan<br/><i>gate</i>"]:::done
+    design_architecture["Design system architecture<br/><i>architect</i>"]:::done
+    define_api_contract["Define REST API contract (OpenAPI 3)<br/><i>architect</i>"]:::done
+    define_data_schema["Define persistence schema (SQL DDL)<br/><i>architect</i>"]:::done
+    impl_core["Implement core: config, codec, id generation, validation, models, errors<br/><i>coder</i>"]:::done
+    impl_storage["Implement repository + redirect cache<br/><i>coder</i>"]:::done
+    impl_analytics["Implement async click analytics<br/><i>coder</i>"]:::done
+    impl_service["Implement service layer (+ rate limiter)<br/><i>coder</i>"]:::done
+    impl_api["Implement HTTP API conforming to the contract<br/><i>coder</i>"]:::done
+    write_unit_tests["Write unit tests from the design<br/><i>tester</i>"]:::done
+    write_integration_tests["Write integration + contract tests<br/><i>tester</i>"]:::done
+    write_docs["Write README + architecture docs<br/><i>docs</i>"]:::done
+    analyze_risks["Analyse risks, trade-offs, failure scenarios<br/><i>risk</i>"]:::done
+    validate["Validate: syntax, policy, lint, contract, tests<br/><i>validator</i>"]:::done
+    approve_release["G3: approve validated output<br/><i>gate</i>"]:::done
+    repair_1["Repair failures from validation #1<br/><i>repairer</i>"]:::done
+    validate_2["Re-validate (iteration 2)<br/><i>validator</i>"]:::done
+    analyze --> clarify
+    clarify --> plan
+    plan --> approve_plan
+    approve_plan --> design_architecture
+    design_architecture --> define_api_contract
+    design_architecture --> define_data_schema
+    design_architecture --> impl_core
+    impl_core --> impl_storage
+    define_data_schema --> impl_storage
+    impl_storage --> impl_analytics
+    impl_storage --> impl_service
+    impl_analytics --> impl_service
+    impl_service --> impl_api
+    define_api_contract --> impl_api
+    design_architecture --> write_unit_tests
+    define_api_contract --> write_integration_tests
+    define_api_contract --> write_docs
+    define_data_schema --> write_docs
+    design_architecture --> analyze_risks
+    impl_api --> validate
+    write_unit_tests --> validate
+    write_integration_tests --> validate
+    validate_2 --> approve_release
+    write_docs --> approve_release
+    analyze_risks --> approve_release
+    validate --> repair_1
+    repair_1 --> validate_2
+    classDef done fill:#d4f7d4,stroke:#2e7d32
+    classDef failed fill:#ffd6d6,stroke:#c62828
+    classDef blocked fill:#eee,stroke:#999,stroke-dasharray: 4

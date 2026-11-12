@@ -1,0 +1,281 @@
+{
+ "meta": {
+  "run_id": "ambiguous",
+  "requirement": "We need a links thing that's fast and has some stats. Maybe users too?",
+  "status": "needs_clarification",
+  "llm": "offline",
+  "llm_calls": 0,
+  "approval": "auto",
+  "duration_s": 0.0,
+  "artifacts_path": "workspace/",
+  "patch": null,
+  "message": "Stopped at G1: 3 blocking question(s). See CLARIFICATION_REQUEST.md.",
+  "limitations": [
+   "Offline mode: agents use deterministic strategies and domain blueprints (URL shortener, the bundled brownfield sample). Other domains/repositories need `--llm anthropic`.",
+   "Generated service uses SQLite and an in-process cache/queue: correct and tested, but not the production stack for the stated scale target (see scaling path).",
+   "No authentication/authorization on the API (documented risk).",
+   "Load/performance targets are design targets; no load test is executed by the pipeline.",
+   "Validation proves the generated tests pass and the contract matches; it cannot prove the tests are exhaustive - human review at G3 remains essential."
+  ]
+ },
+ "spec": {
+  "raw": "We need a links thing that's fast and has some stats. Maybe users too?",
+  "req_type": "greenfield",
+  "domain": "url_shortener",
+  "title": "URL shortener service",
+  "intent": "Let clients turn long URLs into short codes that redirect, persist them durably, and report how links are used.",
+  "functional": [
+   "Create a short link for a valid http(s) URL via REST API",
+   "Redirect GET /{code} to the target URL",
+   "Fetch and delete link metadata via REST API",
+   "Record clicks and expose per-link analytics",
+   "Persist links and analytics durably across restarts"
+  ],
+  "non_functional": [
+   "Redirect hot path does no synchronous writes (analytics are asynchronous)",
+   "Short codes are non-sequential and not enumerable",
+   "Horizontally scalable stateless API tier; storage behind a repository interface",
+   "Consistent JSON error model; no internal details leaked on errors",
+   "Input validation on every external field (URL scheme, length, body size)"
+  ],
+  "out_of_scope": [
+   "User accounts / authentication (documented as a follow-up)",
+   "Web UI",
+   "Link previews / malware scanning (documented as a risk)"
+  ],
+  "ambiguities": [
+   {
+    "id": "system",
+    "question": "Is the system a URL shortener (create short codes that redirect to long URLs)?",
+    "why_it_matters": "Determines the whole architecture; 'links thing' could also mean a bookmark manager.",
+    "options": [
+     "yes, a URL shortener with redirects",
+     "no, something else (describe)"
+    ],
+    "default": "yes, a URL shortener with redirects",
+    "severity": "high",
+    "resolution": null,
+    "resolved_by": null
+   },
+   {
+    "id": "scale",
+    "question": "What load should the design target?",
+    "why_it_matters": "Drives caching, storage choice, code-space size and the analytics pipeline.",
+    "options": [
+     "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+     "internal tool: <100 requests/s",
+     "internet scale: 1M+ redirects/s, multi-region"
+    ],
+    "default": "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+    "severity": "medium",
+    "resolution": null,
+    "resolved_by": null
+   },
+   {
+    "id": "performance",
+    "question": "What does 'fast' mean for redirects?",
+    "why_it_matters": "Sets the latency budget for the hot path and whether a cache is mandatory.",
+    "options": [
+     "p99 redirect latency < 50 ms (server side) with cache",
+     "p99 < 200 ms, no cache needed"
+    ],
+    "default": "p99 redirect latency < 50 ms (server side) with cache",
+    "severity": "medium",
+    "resolution": null,
+    "resolved_by": null
+   },
+   {
+    "id": "analytics",
+    "question": "Which analytics are required?",
+    "why_it_matters": "Determines the event model, storage growth and whether raw click events are kept.",
+    "options": [
+     "detailed: total clicks, clicks per day, top referrers",
+     "basic: total clicks and last click time"
+    ],
+    "default": "detailed: total clicks, clicks per day, top referrers",
+    "severity": "high",
+    "resolution": null,
+    "resolved_by": null
+   },
+   {
+    "id": "users",
+    "question": "Are user accounts (sign-up, login, per-user link ownership) in scope for this iteration?",
+    "why_it_matters": "Adds identity, authorization on every endpoint and a users table; roughly doubles scope.",
+    "options": [
+     "out of scope for v1 (anonymous API); design leaves room for ownership",
+     "in scope: accounts and per-user links"
+    ],
+    "default": "out of scope for v1 (anonymous API); design leaves room for ownership",
+    "severity": "high",
+    "resolution": null,
+    "resolved_by": null
+   },
+   {
+    "id": "custom_alias",
+    "question": "Should clients be able to choose a custom alias?",
+    "why_it_matters": "Adds alias validation, reserved words and a conflict (409) path.",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "default": "yes",
+    "severity": "low",
+    "resolution": null,
+    "resolved_by": null
+   },
+   {
+    "id": "expiry",
+    "question": "Should links support an optional expiry?",
+    "why_it_matters": "Adds a nullable expires_at column and a 410 Gone response.",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "default": "yes",
+    "severity": "low",
+    "resolution": null,
+    "resolved_by": null
+   },
+   {
+    "id": "rate_limit",
+    "question": "Should link creation be rate limited to prevent abuse?",
+    "why_it_matters": "Public shorteners are abused for spam/phishing; protects storage and reputation.",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "default": "yes",
+    "severity": "low",
+    "resolution": null,
+    "resolved_by": null
+   }
+  ],
+  "assumptions": [],
+  "options": {},
+  "acceptance_criteria": [
+   "POST /api/v1/links returns 201 with code and short_url for a valid URL, 400 for an invalid one",
+   "GET /{code} returns 302 with Location for a known code and 404 for an unknown one",
+   "Creating many links concurrently yields unique codes and never overwrites an existing link",
+   "Click counts reported by the stats endpoint equal the number of redirects served",
+   "Every route in the implementation is documented in the OpenAPI contract and vice versa"
+  ]
+ },
+ "plan": null,
+ "tasks": [
+  {
+   "id": "analyze",
+   "title": "Analyse and normalize the requirement",
+   "agent": "analyst",
+   "description": "",
+   "depends_on": [],
+   "params": {
+    "requirement": "We need a links thing that's fast and has some stats. Maybe users too?",
+    "has_repo": false
+   },
+   "outputs": [
+    "spec"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "done",
+   "attempts": 1,
+   "error": null,
+   "started_at": 1794419021.5006716,
+   "finished_at": 1794419021.5010872,
+   "spawned_by": null
+  },
+  {
+   "id": "clarify",
+   "title": "G1: resolve ambiguities",
+   "agent": "clarifier",
+   "description": "",
+   "depends_on": [
+    "analyze"
+   ],
+   "params": {},
+   "outputs": [
+    "spec"
+   ],
+   "max_attempts": 1,
+   "critical": true,
+   "status": "failed",
+   "attempts": 1,
+   "error": "ClarificationHalt: 3 blocking question(s) need a human answer",
+   "started_at": 1794419021.5014129,
+   "finished_at": 1794419021.5018075,
+   "spawned_by": null
+  },
+  {
+   "id": "plan",
+   "title": "Decompose into a task graph",
+   "agent": "planner",
+   "description": "",
+   "depends_on": [
+    "clarify"
+   ],
+   "params": {},
+   "outputs": [
+    "plan"
+   ],
+   "max_attempts": 3,
+   "critical": true,
+   "status": "blocked",
+   "attempts": 0,
+   "error": "blocked: upstream task 'clarify' failed",
+   "started_at": null,
+   "finished_at": null,
+   "spawned_by": null
+  }
+ ],
+ "impact": null,
+ "change_design": null,
+ "architecture": null,
+ "validation_history": [],
+ "risks": null,
+ "audit": [
+  {
+   "gate": "clarify:scale",
+   "decision": "1k creates/s, 50k redirects/s at peak (design target); 100M links/year",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419021.5016372
+  },
+  {
+   "gate": "clarify:performance",
+   "decision": "p99 redirect latency < 50 ms (server side) with cache",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419021.5016387
+  },
+  {
+   "gate": "clarify:custom_alias",
+   "decision": "yes",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419021.5016408
+  },
+  {
+   "gate": "clarify:expiry",
+   "decision": "yes",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419021.5016415
+  },
+  {
+   "gate": "clarify:rate_limit",
+   "decision": "yes",
+   "by": "default",
+   "comment": "",
+   "ts": 1794419021.5016425
+  },
+  {
+   "gate": "clarify",
+   "decision": "halted",
+   "by": "policy",
+   "comment": "3 blocking question(s) unanswered",
+   "ts": 1794419021.5016448
+  }
+ ],
+ "artifacts": {},
+ "contract_coverage": null
+}

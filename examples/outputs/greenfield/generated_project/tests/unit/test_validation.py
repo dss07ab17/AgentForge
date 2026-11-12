@@ -1,0 +1,34 @@
+import pytest
+
+from shortener.errors import InvalidRequest
+from shortener.validation import validate_alias, validate_url
+
+
+@pytest.mark.parametrize("url", ["https://example.com", "http://example.com/a?b=c#d", "  https://x.io/path  "])
+def test_valid_urls_are_accepted_and_trimmed(url):
+    assert validate_url(url) == url.strip()
+
+
+@pytest.mark.parametrize("url", [
+    None, "", "   ", 42, "example.com", "ftp://example.com", "javascript:alert(1)",
+    "https://", "https://exa mple.com", "https://example.com/\nX",
+])
+def test_invalid_urls_are_rejected(url):
+    with pytest.raises(InvalidRequest):
+        validate_url(url)
+
+
+def test_url_length_limit():
+    with pytest.raises(InvalidRequest):
+        validate_url("https://example.com/" + "a" * 2048, max_length=2048)
+
+
+@pytest.mark.parametrize("alias", ["abc", "my-link_2", "A" * 32])
+def test_valid_aliases(alias):
+    assert validate_alias(alias) == alias
+
+
+@pytest.mark.parametrize("alias", ["ab", "A" * 33, "has space", "emoji🙂", "api", "HEALTHZ", 7])
+def test_invalid_or_reserved_aliases(alias):
+    with pytest.raises(InvalidRequest):
+        validate_alias(alias)

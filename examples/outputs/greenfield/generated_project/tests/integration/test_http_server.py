@@ -1,0 +1,68 @@
+"""Runs the real threaded server on an ephemeral port with a file-backed database."""
+import http.client
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from wsgiref.simple_server import make_server
+
+import pytest
+
+from shortener.api import create_app
+from shortener.config import Settings
+from shortener.server import QuietHandler, ThreadingWSGIServer
+
+
+@pytest.fixture
+def live_server(tmp_path):
+    settings = Settings(database_path=str(tmp_path / "test.db"), base_url="http://test", rate_limit_per_minute=10_000,
+                        analytics_flush_interval=0.05)
+    app = create_app(settings)
+    httpd = make_server("127.0.0.1", 0, app, server_class=ThreadingWSGIServer, handler_class=QuietHandler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    yield httpd.server_address[1], app
+    httpd.shutdown()
+    httpd.server_close()
+    app.service.recorder.stop()
+    app.service.repo.close()
+
+
+def call(port, method, path, body=None):
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    conn.request(method, path, body=json.dumps(body) if body is not None else None,
+                 headers={"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    data = resp.read()
+    conn.close()
+    return resp.status, dict(resp.getheaders()), (json.loads(data) if data else None)
+
+
+def test_full_round_trip_over_http(live_server):
+    port, app = live_server
+    status, _, created = call(port, "POST", "/api/v1/links", {"url": "https://example.com/x"})
+    assert status == 201
+    status, headers, _ = call(port, "GET", f"/{created['code']}")
+    assert status == 302 and headers["Location"] == "https://example.com/x"
+    app.service.recorder.stop()  # deterministic flush
+    _, _, stats = call(port, "GET", f"/api/v1/links/{created['code']}/stats")
+    assert stats["total_clicks"] == 1
+
+
+def test_concurrent_creates_and_redirects(live_server):
+    port, app = live_server
+
+    def create(i):
+        return call(port, "POST", "/api/v1/links", {"url": f"https://example.com/{i}"})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(create, range(40)))
+    assert all(status == 201 for status, _, _ in results)
+    codes = {body["code"] for _, _, body in results}
+    assert len(codes) == 40
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        redirects = list(pool.map(lambda c: call(port, "GET", f"/{c}")[0], list(codes) * 3))
+    assert redirects.count(302) == 120
+    app.service.recorder.stop()
+    total = sum(app.service.repo.stats(c)["total_clicks"] for c in codes)
+    assert total == 120

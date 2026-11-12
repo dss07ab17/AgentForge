@@ -1,0 +1,7 @@
+{
+  "clarifications": {
+    "system": "yes, a URL shortener with redirects",
+    "analytics": "detailed: total clicks, clicks per day, top referrers",
+    "users": "out of scope for v1 (anonymous API); design leaves room for ownership"
+  }
+}

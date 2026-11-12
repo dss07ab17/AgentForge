@@ -1,0 +1,173 @@
+"""HTTP layer: a small dependency-free WSGI application.
+
+Routes mirror ``api/openapi.json`` one-to-one (enforced by tests/integration/test_contract.py).
+Any WSGI server can host it (gunicorn/uwsgi in production, wsgiref for local dev).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import re
+import uuid
+from typing import Callable, Iterable
+
+from .analytics import ClickRecorder
+from .cache import TTLCache
+from .config import Settings
+from .errors import InvalidRequest, NotFound, PayloadTooLarge, {% if o.rate_limit %}RateLimited, {% endif %}ShortenerError
+{% if o.rate_limit %}
+from .ratelimit import TokenBucketLimiter
+{% endif %}
+from .service import ShortenerService
+from .storage import SQLiteRepository
+
+log = logging.getLogger(__name__)
+
+# (method, path template, handler name) - the single source of truth for routing.
+ROUTES: list[tuple[str, str, str]] = [
+    ("GET", "/healthz", "health"),
+    ("POST", "/api/v1/links", "create_link"),
+    ("GET", "/api/v1/links/{code}", "get_link"),
+    ("DELETE", "/api/v1/links/{code}", "delete_link"),
+    ("GET", "/api/v1/links/{code}/stats", "get_stats"),
+    ("GET", "/{code}", "redirect"),
+]
+
+_STATUS_TEXT = {200: "OK", 201: "Created", 204: "No Content", 302: "Found", 400: "Bad Request",
+                404: "Not Found", 405: "Method Not Allowed", 409: "Conflict", 410: "Gone",
+                413: "Payload Too Large", 429: "Too Many Requests", 500: "Internal Server Error",
+                503: "Service Unavailable"}
+
+
+def _compile(template: str) -> re.Pattern:
+    return re.compile("^" + re.sub(r"\{(\w+)\}", r"(?P<\1>[A-Za-z0-9_-]{1,64})", template) + "$")
+
+
+_COMPILED = [(method, _compile(path), handler) for method, path, handler in ROUTES]
+
+
+class Response:
+    def __init__(self, status: int, body: object = None, headers: dict | None = None) -> None:
+        self.status = status
+        self.headers = dict(headers or {})
+        if body is None:
+            self.body = b""
+        else:
+            self.body = json.dumps(body, separators=(",", ":")).encode()
+            self.headers.setdefault("Content-Type", "application/json")
+
+
+def _error(exc: ShortenerError) -> Response:
+    resp = Response(exc.status, {"error": {"code": exc.code, "message": exc.message}})
+    if hasattr(exc, "retry_after"):
+        resp.headers["Retry-After"] = str(exc.retry_after)
+    return resp
+
+
+class Application:
+    def __init__(self, service: ShortenerService, settings: Settings{% if o.rate_limit %}, limiter: TokenBucketLimiter | None = None{% endif %}) -> None:
+        self.service = service
+        self.settings = settings
+{% if o.rate_limit %}
+        self.limiter = limiter or TokenBucketLimiter(settings.rate_limit_per_minute)
+{% endif %}
+
+    # ------------------------------------------------------------ WSGI entry
+    def __call__(self, environ: dict, start_response: Callable) -> Iterable[bytes]:
+        request_id = environ.get("HTTP_X_REQUEST_ID") or uuid.uuid4().hex
+        try:
+            resp = self._dispatch(environ)
+        except ShortenerError as exc:
+            resp = _error(exc)
+        except Exception:  # last line of defence: never leak internals to clients
+            log.exception("unhandled error request_id=%s", request_id)
+            resp = Response(500, {"error": {"code": "internal_error", "message": "internal error"}})
+        resp.headers["X-Request-ID"] = request_id
+        resp.headers["Content-Length"] = str(len(resp.body))
+        start_response(f"{resp.status} {_STATUS_TEXT.get(resp.status, '')}".strip(), list(resp.headers.items()))
+        return [resp.body]
+
+    def _dispatch(self, environ: dict) -> Response:
+        method = environ.get("REQUEST_METHOD", "GET").upper()
+        path = environ.get("PATH_INFO", "/") or "/"
+        allowed = []
+        for route_method, pattern, handler in _COMPILED:
+            match = pattern.match(path)
+            if not match:
+                continue
+            if route_method != method:
+                allowed.append(route_method)
+                continue
+            return getattr(self, handler)(environ, **match.groupdict())
+        if allowed:
+            return Response(405, {"error": {"code": "method_not_allowed", "message": f"use {', '.join(allowed)}"}},
+                            {"Allow": ", ".join(allowed)})
+        raise NotFound("route not found")
+
+    # -------------------------------------------------------------- helpers
+    def _json_body(self, environ: dict) -> dict:
+        try:
+            length = int(environ.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            raise InvalidRequest("invalid Content-Length") from None
+        if length > self.settings.max_body_bytes:
+            raise PayloadTooLarge(f"request body exceeds {self.settings.max_body_bytes} bytes")
+        raw = environ["wsgi.input"].read(length) if length else b""
+        try:
+            body = json.loads(raw or b"{}")
+        except (ValueError, UnicodeDecodeError):
+            raise InvalidRequest("request body must be valid JSON") from None
+        if not isinstance(body, dict):
+            raise InvalidRequest("request body must be a JSON object")
+        return body
+
+    # ------------------------------------------------------------- handlers
+    def health(self, environ: dict) -> Response:
+        return Response(200, self.service.health())
+
+    def create_link(self, environ: dict) -> Response:
+{% if o.rate_limit %}
+        client = environ.get("HTTP_X_FORWARDED_FOR", environ.get("REMOTE_ADDR", "unknown")).split(",")[0].strip()
+        if not self.limiter.allow(client):
+            raise RateLimited("rate limit exceeded for link creation", retry_after=self.limiter.retry_after())
+{% endif %}
+        body = self._json_body(environ)
+        link = self.service.create_link(
+            body.get("url"),
+{% if o.custom_alias %}
+            custom_alias=body.get("custom_alias"),
+{% endif %}
+{% if o.expiry %}
+            expires_in_seconds=body.get("expires_in_seconds"),
+{% endif %}
+        )
+        data = link.to_dict(self.settings.base_url)
+        return Response(201, data, {"Location": f"/api/v1/links/{link.code}"})
+
+    def get_link(self, environ: dict, code: str) -> Response:
+        return Response(200, self.service.get_link(code).to_dict(self.settings.base_url))
+
+    def delete_link(self, environ: dict, code: str) -> Response:
+        self.service.delete_link(code)
+        return Response(204)
+
+    def get_stats(self, environ: dict, code: str) -> Response:
+        return Response(200, self.service.get_stats(code))
+
+    def redirect(self, environ: dict, code: str) -> Response:
+        target = self.service.resolve(code, referrer=environ.get("HTTP_REFERER"),
+                                      user_agent=environ.get("HTTP_USER_AGENT"))
+        return Response(302, None, {"Location": target, "Cache-Control": "private, max-age=0"})
+
+
+def create_app(settings: Settings | None = None, *, start_background: bool = True) -> Application:
+    """Composition root: wire storage, cache, analytics and service together."""
+    settings = settings or Settings.from_env()
+    repo = SQLiteRepository(settings.database_path)
+    recorder = ClickRecorder(repo, flush_interval=settings.analytics_flush_interval,
+                             batch_size=settings.analytics_batch_size, max_queue=settings.analytics_queue_size)
+    if start_background:
+        recorder.start()
+    cache = TTLCache(settings.cache_size, settings.cache_ttl_seconds)
+    service = ShortenerService(repo, settings, cache=cache, recorder=recorder)
+    return Application(service, settings)

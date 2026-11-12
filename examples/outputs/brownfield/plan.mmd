@@ -1,0 +1,53 @@
+flowchart TD
+    analyze["Analyse and normalize the requirement<br/><i>analyst</i>"]:::done
+    codebase["Analyse existing codebase + impact<br/><i>codebase_analyst</i>"]:::done
+    clarify["G1: resolve ambiguities<br/><i>clarifier</i>"]:::done
+    plan["Decompose into a task graph<br/><i>planner</i>"]:::done
+    approve_plan["G2: approve spec + plan<br/><i>gate</i>"]:::done
+    design_change["Design the change (per-module plan, API + data migration)<br/><i>architect</i>"]:::done
+    baseline_tests["Run existing test suite on the untouched baseline<br/><i>validator</i>"]:::done
+    impl_codes["Change app/codes.py<br/><i>coder</i>"]:::done
+    impl_db["Change app/db.py<br/><i>coder</i>"]:::done
+    impl_store["Change app/store.py<br/><i>coder</i>"]:::done
+    impl_service["Change app/service.py<br/><i>coder</i>"]:::done
+    impl_web["Change app/web.py<br/><i>coder</i>"]:::done
+    update_tests["Add regression + feature tests<br/><i>tester</i>"]:::done
+    update_docs["Update README / changelog<br/><i>docs</i>"]:::done
+    analyze_risks["Analyse risks, trade-offs, failure scenarios<br/><i>risk</i>"]:::done
+    validate["Validate: syntax, policy, lint, tests, regression vs baseline<br/><i>validator</i>"]:::done
+    approve_release["G3: approve the diff<br/><i>gate</i>"]:::done
+    analyze --> clarify
+    codebase --> clarify
+    clarify --> plan
+    plan --> approve_plan
+    approve_plan --> design_change
+    approve_plan --> baseline_tests
+    design_change --> impl_codes
+    design_change --> impl_db
+    design_change --> impl_store
+    design_change --> impl_service
+    impl_codes --> impl_service
+    impl_store --> impl_service
+    design_change --> impl_web
+    impl_db --> impl_web
+    impl_service --> impl_web
+    design_change --> update_tests
+    impl_codes --> update_docs
+    impl_db --> update_docs
+    impl_store --> update_docs
+    impl_service --> update_docs
+    impl_web --> update_docs
+    design_change --> analyze_risks
+    impl_codes --> validate
+    impl_db --> validate
+    impl_store --> validate
+    impl_service --> validate
+    impl_web --> validate
+    update_tests --> validate
+    baseline_tests --> validate
+    validate --> approve_release
+    update_docs --> approve_release
+    analyze_risks --> approve_release
+    classDef done fill:#d4f7d4,stroke:#2e7d32
+    classDef failed fill:#ffd6d6,stroke:#c62828
+    classDef blocked fill:#eee,stroke:#999,stroke-dasharray: 4

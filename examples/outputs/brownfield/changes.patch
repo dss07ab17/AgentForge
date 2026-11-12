@@ -1,0 +1,280 @@
+--- a/README.md
++++ b/README.md
+@@ -3,6 +3,13 @@
+ Minimal link shortener.
+ 
+ - `POST /shorten` with `{"url": "..."}` -> `201 {"code": "..."}`
+-- `GET /<code>` -> `302` redirect
++- `POST /shorten` also accepts optional `"ttl_seconds"` (integer, 1 to 10 years); the link expires after that many seconds
++- `GET /<code>` -> `302` redirect, `404` if unknown, `410 Gone` if expired
++
++## Changelog
++
++### v1.1
++- Added optional link expiry (`ttl_seconds`, new nullable `expires_at` column, automatic idempotent migration for v1 databases).
++- Fixed: a newly generated code that collided with an existing one silently overwrote that link (`INSERT OR REPLACE`). Inserts are now strict and collisions are retried.
+ 
+ Run tests: `python -m pytest`
+--- a/app/db.py
++++ b/app/db.py
+@@ -5,7 +5,8 @@
+ CREATE TABLE IF NOT EXISTS links (
+     code TEXT PRIMARY KEY,
+     url TEXT NOT NULL,
+-    created REAL NOT NULL
++    created REAL NOT NULL,
++    expires_at REAL
+ );
+ """
+ 
+@@ -13,4 +14,13 @@
+ def connect(path="linkshort.db"):
+     conn = sqlite3.connect(path, check_same_thread=False)
+     conn.executescript(SCHEMA)
++    _migrate(conn)
+     return conn
++
++
++def _migrate(conn):
++    """Forward-only, idempotent migration for databases created by v1."""
++    columns = {row[1] for row in conn.execute("PRAGMA table_info(links)")}
++    if "expires_at" not in columns:
++        conn.execute("ALTER TABLE links ADD COLUMN expires_at REAL")
++        conn.commit()
+--- a/app/service.py
++++ b/app/service.py
+@@ -1,22 +1,52 @@
+ """Business logic for shortening and resolving links."""
++import time
++
+ from app import store
+ from app.codes import new_code
++
++
++MAX_CODE_ATTEMPTS = 10
++MIN_TTL_SECONDS = 1
++MAX_TTL_SECONDS = 10 * 365 * 24 * 3600
+ 
+ 
+ class LinkNotFound(Exception):
+     pass
+ 
+ 
+-def shorten(conn, url, code_factory=new_code):
+-    if not url.startswith(("http://", "https://")):
+-        raise ValueError("url must start with http:// or https://")
+-    code = code_factory()
+-    store.save_link(conn, code, url)
+-    return code
++class LinkExpired(Exception):
++    pass
+ 
+ 
+-def resolve(conn, code):
+-    url = store.get_url(conn, code)
+-    if url is None:
++class CodeSpaceExhausted(Exception):
++    """Could not find a free code after MAX_CODE_ATTEMPTS tries."""
++
++
++def shorten(conn, url, code_factory=new_code, ttl_seconds=None, clock=None):
++    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
++        raise ValueError("url must start with http:// or https://")
++    expires_at = None
++    if ttl_seconds is not None:
++        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, int):
++            raise ValueError("ttl_seconds must be an integer")
++        if not MIN_TTL_SECONDS <= ttl_seconds <= MAX_TTL_SECONDS:
++            raise ValueError(f"ttl_seconds must be between {MIN_TTL_SECONDS} and {MAX_TTL_SECONDS}")
++        expires_at = (clock or time.time)() + ttl_seconds
++    for _ in range(MAX_CODE_ATTEMPTS):
++        code = code_factory()
++        try:
++            store.save_link(conn, code, url, expires_at)
++            return code
++        except store.DuplicateCode:
++            continue  # collision: never overwrite, try a fresh code
++    raise CodeSpaceExhausted("could not allocate a unique code")
++
++
++def resolve(conn, code, clock=None):
++    link = store.get_link(conn, code)
++    if link is None:
+         raise LinkNotFound(code)
++    url, expires_at = link
++    if expires_at is not None and (clock or time.time)() >= expires_at:
++        raise LinkExpired(code)
+     return url
+--- a/app/store.py
++++ b/app/store.py
+@@ -1,15 +1,32 @@
+ """Persistence helpers for links."""
++import sqlite3
+ import time
+ 
+ 
+-def save_link(conn, code, url):
+-    conn.execute(
+-        "INSERT OR REPLACE INTO links (code, url, created) VALUES (?, ?, ?)",
+-        (code, url, time.time()),
+-    )
++class DuplicateCode(Exception):
++    """The short code is already taken (primary-key violation)."""
++
++
++def save_link(conn, code, url, expires_at=None):
++    """Insert a new link. Never overwrites: raises DuplicateCode if the code exists."""
++    try:
++        conn.execute(
++            "INSERT INTO links (code, url, created, expires_at) VALUES (?, ?, ?, ?)",
++            (code, url, time.time(), expires_at),
++        )
++    except sqlite3.IntegrityError as exc:
++        conn.rollback()
++        raise DuplicateCode(code) from exc
+     conn.commit()
+ 
+ 
++def get_link(conn, code):
++    """Return (url, expires_at) for a code, or None."""
++    row = conn.execute("SELECT url, expires_at FROM links WHERE code = ?", (code,)).fetchone()
++    return (row[0], row[1]) if row else None
++
++
+ def get_url(conn, code):
+-    row = conn.execute("SELECT url FROM links WHERE code = ?", (code,)).fetchone()
+-    return row[0] if row else None
++    """Backward-compatible helper kept for existing callers."""
++    link = get_link(conn, code)
++    return link[0] if link else None
+--- a/app/web.py
++++ b/app/web.py
+@@ -28,15 +28,19 @@
+         length = int(environ.get("CONTENT_LENGTH") or 0)
+         data = json.loads(environ["wsgi.input"].read(length) or b"{}")
+         try:
+-            code = service.shorten(conn, data.get("url", ""))
++            code = service.shorten(conn, data.get("url", ""), ttl_seconds=data.get("ttl_seconds"))
+         except ValueError as exc:
+             return _json(start_response, "400 Bad Request", {"error": str(exc)})
++        except service.CodeSpaceExhausted:
++            return _json(start_response, "503 Service Unavailable", {"error": "try again"})
+         return _json(start_response, "201 Created", {"code": code})
+     if method == "GET" and len(path) > 1:
+         try:
+             url = service.resolve(conn, path[1:])
+         except service.LinkNotFound:
+             return _json(start_response, "404 Not Found", {"error": "not found"})
++        except service.LinkExpired:
++            return _json(start_response, "410 Gone", {"error": "link expired"})
+         start_response("302 Found", [("Location", url), ("Content-Length", "0")])
+         return [b""]
+     return _json(start_response, "404 Not Found", {"error": "not found"})
+--- /dev/null
++++ b/tests/test_expiry_and_collisions.py
+@@ -0,0 +1,105 @@
++"""Regression + feature tests for link expiry and the code-collision overwrite bug."""
++import io
++import json
++import sqlite3
++
++import pytest
++
++from app import service, store, web
++from app.db import connect
++
++
++@pytest.fixture
++def conn():
++    return connect(":memory:")
++
++
++class Clock:
++    def __init__(self, t=1_000_000.0):
++        self.t = t
++
++    def __call__(self):
++        return self.t
++
++
++def scripted(*codes):
++    pending = list(codes)
++    return lambda: pending.pop(0)
++
++
++def test_collision_does_not_overwrite_existing_link(conn):
++    """Regression for the v1 bug: INSERT OR REPLACE silently replaced links."""
++    first = service.shorten(conn, "https://first.example", code_factory=scripted("aaaaa"))
++    second = service.shorten(conn, "https://second.example", code_factory=scripted("aaaaa", "bbbbb"))
++    assert (first, second) == ("aaaaa", "bbbbb")
++    assert service.resolve(conn, "aaaaa") == "https://first.example"
++
++
++def test_store_rejects_duplicate_codes(conn):
++    store.save_link(conn, "abcde", "https://a.example")
++    with pytest.raises(store.DuplicateCode):
++        store.save_link(conn, "abcde", "https://b.example")
++    assert store.get_url(conn, "abcde") == "https://a.example"
++
++
++def test_gives_up_when_code_space_is_exhausted(conn):
++    service.shorten(conn, "https://a.example", code_factory=scripted("zzzzz"))
++    with pytest.raises(service.CodeSpaceExhausted):
++        service.shorten(conn, "https://b.example", code_factory=scripted(*["zzzzz"] * service.MAX_CODE_ATTEMPTS))
++
++
++def test_link_expires_after_ttl(conn):
++    clock = Clock()
++    code = service.shorten(conn, "https://a.example", ttl_seconds=60, clock=clock)
++    clock.t += 59
++    assert service.resolve(conn, code, clock=clock) == "https://a.example"
++    clock.t += 1
++    with pytest.raises(service.LinkExpired):
++        service.resolve(conn, code, clock=clock)
++
++
++def test_links_without_ttl_never_expire(conn):
++    code = service.shorten(conn, "https://a.example")
++    assert service.resolve(conn, code, clock=lambda: 10**12) == "https://a.example"
++
++
++@pytest.mark.parametrize("ttl", [0, -1, "60", 1.5, True, 10**10])
++def test_invalid_ttl_rejected(conn, ttl):
++    with pytest.raises(ValueError):
++        service.shorten(conn, "https://a.example", ttl_seconds=ttl)
++
++
++def test_migration_adds_column_to_v1_database(tmp_path):
++    path = str(tmp_path / "old.db")
++    old = sqlite3.connect(path)
++    old.execute("CREATE TABLE links (code TEXT PRIMARY KEY, url TEXT NOT NULL, created REAL NOT NULL)")
++    old.execute("INSERT INTO links VALUES ('old01', 'https://legacy.example', 0)")
++    old.commit()
++    old.close()
++    conn = connect(path)
++    assert service.resolve(conn, "old01") == "https://legacy.example"
++    connect(path)  # idempotent
++
++
++def call(method, path, body=None):
++    raw = json.dumps(body).encode() if body is not None else b""
++    environ = {"REQUEST_METHOD": method, "PATH_INFO": path, "CONTENT_LENGTH": str(len(raw)),
++               "wsgi.input": io.BytesIO(raw)}
++    status = {}
++    payload = b"".join(web.app(environ, lambda s, h: status.update(code=int(s.split()[0]), headers=dict(h))))
++    return status["code"], status["headers"], payload
++
++
++def test_http_expired_link_returns_410(monkeypatch):
++    monkeypatch.setattr(web, "CONN", connect(":memory:"))
++    status, _, payload = call("POST", "/shorten", {"url": "https://a.example", "ttl_seconds": 1})
++    assert status == 201
++    code = json.loads(payload)["code"]
++    assert call("GET", f"/{code}")[0] == 302
++    monkeypatch.setattr(service.time, "time", lambda: 10**12)
++    assert call("GET", f"/{code}")[0] == 410
++
++
++def test_http_invalid_ttl_returns_400(monkeypatch):
++    monkeypatch.setattr(web, "CONN", connect(":memory:"))
++    assert call("POST", "/shorten", {"url": "https://a.example", "ttl_seconds": "soon"})[0] == 400
